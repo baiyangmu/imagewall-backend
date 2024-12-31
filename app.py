@@ -26,7 +26,7 @@ def get_db_connection():
     return connection
 
 
-@api.route('/upload', methods=['POST'])
+@api.route('/upload', methods=['POST','OPTIONS'])
 def upload_images():
     if 'files' not in request.files:
         return jsonify({"error": "No files part"}), 400
@@ -66,7 +66,7 @@ def upload_images():
 
 
 # 2. 获取图片列表
-@api.route('/images', methods=['GET'])
+@api.route('/images', methods=['GET','OPTIONS'])
 def get_images():
     page = request.args.get('page', 1, type=int)  # 获取页码，默认为1
     per_page = 10  # 每页显示10张图片
@@ -109,7 +109,7 @@ def get_image(image_id):
     )
 
 # 4. 删除图片
-@api.route('/image/<int:image_id>', methods=['DELETE'])
+@api.route('/image/<int:image_id>', methods=['DELETE','OPTIONS'])
 def delete_image(image_id):
     connection = get_db_connection()
     cursor = connection.cursor()
