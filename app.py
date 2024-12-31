@@ -9,8 +9,7 @@ app = Flask(__name__)
 app.config.from_object(Config)
 
 # 启用 CORS，允许所有来源的请求
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # 或者更严格地设置允许的域名，如 'http://localhost:3000'
-
+CORS(app)
 # 创建一个 Blueprint
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -28,6 +27,8 @@ def get_db_connection():
 
 @api.route('/upload', methods=['POST','OPTIONS'])
 def upload_images():
+    if request.method == 'OPTIONS':
+        return '', 200  # 处理 OPTIONS 请求并返回 200 状态
     if 'files' not in request.files:
         return jsonify({"error": "No files part"}), 400
 
@@ -68,6 +69,8 @@ def upload_images():
 # 2. 获取图片列表
 @api.route('/images', methods=['GET','OPTIONS'])
 def get_images():
+    if request.method == 'OPTIONS':
+        return '', 200  # 处理 OPTIONS 请求并返回 200 状态
     page = request.args.get('page', 1, type=int)  # 获取页码，默认为1
     per_page = 10  # 每页显示10张图片
     offset = (page - 1) * per_page
@@ -85,8 +88,10 @@ def get_images():
     return jsonify({"images": image_list}), 200
 
 # 3. 获取单张图片
-@api.route('/image/<int:image_id>', methods=['GET'])
+@api.route('/image/<int:image_id>', methods=['GET','OPTIONS'])
 def get_image(image_id):
+    if request.method == 'OPTIONS':
+        return '', 200  # 处理 OPTIONS 请求并返回 200 状态
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute("SELECT image_data, mime_type FROM images WHERE id = %s", (image_id,))
@@ -111,6 +116,8 @@ def get_image(image_id):
 # 4. 删除图片
 @api.route('/image/<int:image_id>', methods=['DELETE','OPTIONS'])
 def delete_image(image_id):
+    if request.method == 'OPTIONS':
+        return '', 200  # 处理 OPTIONS 请求并返回 200 状态
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute("SELECT id FROM images WHERE id = %s", (image_id,))
