@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file, redirect
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from flask import Blueprint
 from config import Config
@@ -7,6 +7,7 @@ import io
 import os
 import uuid
 from pathlib import Path
+import hashlib
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -139,11 +140,30 @@ def get_image(image_id):
     if not os.path.exists(file_path):
         return jsonify({"error": "File not found"}), 404
 
-    return send_file(
-        io.BytesIO(open(file_path, 'rb').read()),
+    # 计算文件的 ETag（基于文件内容的哈希值）
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+        etag = hashlib.md5(file_data).hexdigest()
+
+    # 获取请求的 If-None-Match 头
+    request_etag = request.headers.get('If-None-Match')
+
+    # 如果 ETag 匹配，返回 304 Not Modified
+    if request_etag == etag:
+        return '', 304
+
+    # 返回图片数据
+    response = make_response(send_file(
+        io.BytesIO(file_data),
         mimetype=mime_type,
         as_attachment=False
-    )
+    ))
+
+    # 添加缓存头
+    response.headers['Cache-Control'] = 'public, max-age=2592000'  # 缓存 30 天
+    response.headers['ETag'] = etag
+
+    return response
 
 
 @api.route('/image/<int:image_id>', methods=['DELETE','OPTIONS'])
