@@ -7,5 +7,11 @@ class Config:
     MYSQL_PASSWORD = 'ysfsbym22A123456a,./'  # MySQL 密码
     MYSQL_DB = 'imagewall'    # 数据库名称
     MYSQL_CURSORCLASS = 'DictCursor'  # 返回字典类型的查询结果
-    UPLOAD_FOLDER = './static/images'  # 图片保存的文件夹
-    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}  # 允许的图片格式
+    
+    # 本地调试使用相对路径 "./static/images"
+    # 生产环境可改成 "/var/imagewall/images" 或其他绝对路径
+    UPLOAD_FOLDER = '/var/imagewall/images'  
+    
+
+    # 允许的图片类型
+    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}  
