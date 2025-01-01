@@ -58,16 +58,12 @@ def upload_images():
             # 实际保存在本地系统的路径
             save_path = os.path.join(Config.UPLOAD_FOLDER, unique_name)
             file.save(save_path)
-
-            # 数据库中记录一个“对外可见”的路径，比如 "/static/images/xxx.png"
-            # 这样前端访问 http://localhost:5000/static/images/xxx.png 即可
-            file_path_in_db = f"/static/images/{unique_name}"
-
+            
             insert_sql = """
                 INSERT INTO images (file_path, mime_type)
                 VALUES (%s, %s)
             """
-            cursor.execute(insert_sql, (file_path_in_db, mime_type))
+            cursor.execute(insert_sql, (save_path, mime_type))
             uploaded_ids.append(cursor.lastrowid)
 
         connection.commit()
@@ -135,19 +131,16 @@ def get_image(image_id):
     if not row:
         return jsonify({"error": "Image not found"}), 404
 
-    file_path = row['file_path']  # e.g. "/static/images/uuidxxx.png"
+    file_path = row['file_path']
     mime_type = row['mime_type']
+    
+    print(file_path)
 
-    # 1) 直接让 Flask 读取并 send_file
-    #    需要把 "/static/images/xxx.png" 转回本地物理路径 "./static/images/xxx.png"
-    local_path = file_path.lstrip('/')  # "static/images/xxx.png"
-    local_path = os.path.join('.', local_path)  # "./static/images/xxx.png"
-
-    if not os.path.exists(local_path):
+    if not os.path.exists(file_path):
         return jsonify({"error": "File not found"}), 404
 
     return send_file(
-        io.BytesIO(open(local_path, 'rb').read()),
+        io.BytesIO(open(file_path, 'rb').read()),
         mimetype=mime_type,
         as_attachment=False
     )
