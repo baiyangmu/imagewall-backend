@@ -93,7 +93,7 @@ def get_images():
     cursor.execute("""
         SELECT id, created_at, file_path
         FROM images
-        ORDER BY created_at DESC
+        ORDER BY id DESC
         LIMIT %s OFFSET %s
     """, (per_page, offset))
     records = cursor.fetchall()
@@ -202,6 +202,21 @@ def delete_image(image_id):
             print(f"Error deleting file {local_path}: {e}")
 
     return jsonify({"message": f'Image {image_id} deleted successfully'}), 200
+
+
+@api.route('/images/all_ids', methods=['GET','OPTIONS'])
+def get_all_image_ids():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT id FROM images ORDER BY id DESC")
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+
+    return jsonify({"images": rows}), 200
 
 
 app.register_blueprint(api)
