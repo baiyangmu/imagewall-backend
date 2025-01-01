@@ -184,7 +184,7 @@ def delete_image(image_id):
         connection.close()
         return jsonify({"error": "Image not found"}), 404
 
-    file_path = row['file_path']  # "/static/images/uuidxxx.png"
+    file_path = row['file_path']
     
     # 删除数据库记录
     cursor.execute("DELETE FROM images WHERE id = %s", (image_id,))
@@ -193,13 +193,11 @@ def delete_image(image_id):
     connection.close()
 
     # 同时删除本地文件
-    local_path = file_path.lstrip('/')   # "static/images/uuidxxx.png"
-    local_path = os.path.join('.', local_path)  # "./static/images/uuidxxx.png"
-    if os.path.exists(local_path):
+    if os.path.exists(file_path):
         try:
-            os.remove(local_path)
+            os.remove(file_path)
         except OSError as e:
-            print(f"Error deleting file {local_path}: {e}")
+            print(f"Error deleting file {file_path}: {e}")
 
     return jsonify({"message": f'Image {image_id} deleted successfully'}), 200
 
