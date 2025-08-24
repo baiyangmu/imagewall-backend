@@ -2,9 +2,14 @@ from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from flask import Blueprint
 from config import Config
-import pymysql
-import io
 import os
+# ensure mydb wrapper will find the bundled shared library when running the
+# app directly. mydb_wrapper allows overriding via LIBMYDB_PATH env var.
+if "LIBMYDB_PATH" not in os.environ:
+    guessed_lib = os.path.abspath(os.path.join(os.path.dirname(__file__), "bin", "libmydb.so"))
+    os.environ["LIBMYDB_PATH"] = guessed_lib
+from mydb_wrapper import MyDB
+import io
 import uuid
 from pathlib import Path
 import hashlib
@@ -16,14 +21,8 @@ CORS(app)
 api = Blueprint('api', __name__, url_prefix='/api')
 
 def get_db_connection():
-    connection = pymysql.connect(
-        host=Config.MYSQL_HOST,
-        user=Config.MYSQL_USER,
-        password=Config.MYSQL_PASSWORD,
-        database=Config.MYSQL_DB,
-        cursorclass=pymysql.cursors.DictCursor
-    )
-    return connection
+    # placeholder kept for compatibility; not used when using MyDB wrapper
+    raise RuntimeError("MySQL connection is disabled; using internal mydb backend")
 
 # 创建本地文件夹(若不存在)
 upload_dir = Path(Config.UPLOAD_FOLDER)
@@ -31,6 +30,32 @@ upload_dir.mkdir(parents=True, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
+
+
+def ensure_images_table(db):
+    """
+    Ensure the DB is using the `images` table. If the table does not exist,
+    create it and switch to it.
+    """
+    try:
+        rc, out = db.execute("use images")
+    except Exception:
+        # if execute raises, give up silently (higher level code will handle errors)
+        return
+
+    # if the engine reports table not found, create it then try again
+    if rc != 0 or (isinstance(out, str) and "Table not found" in out):
+        create_sql = (
+            "create table images (id int, file_path string, mime_type string, created_at timestamp)"
+        )
+        try:
+            db.execute(create_sql)
+        except Exception:
+            pass
+        try:
+            db.execute("use images")
+        except Exception:
+            pass
 
 @api.route('/upload', methods=['POST','OPTIONS'])
 def upload_images():
@@ -44,10 +69,11 @@ def upload_images():
     if not files:
         return jsonify({"error": "No selected files"}), 400
 
+    # use mydb wrapper
+    DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "test.db"))
+    db = MyDB(DB_PATH)
+    ensure_images_table(db)
     uploaded_ids = []
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
         for file in files:
             if file.filename == '' or not allowed_file(file.filename):
@@ -60,23 +86,32 @@ def upload_images():
             save_path = os.path.join(Config.UPLOAD_FOLDER, unique_name)
             file.save(save_path)
             
-            insert_sql = """
-                INSERT INTO images (file_path, mime_type)
-                VALUES (%s, %s)
-            """
-            cursor.execute(insert_sql, (save_path, mime_type))
-            uploaded_ids.append(cursor.lastrowid)
-
-        connection.commit()
+            # insert via mydb: note the engine expects space-separated values
+            # caller must ensure file_path contains no spaces; otherwise encode it
+            # we use a simple id generation: get max id + 1
+            rc, j = db.execute_json("select id from images order by id desc limit 1 offset 0")
+            if rc == 0 and j and j.get("rows"):
+                try:
+                    last = int(j["rows"][0].get("id", 0))
+                except Exception:
+                    last = 0
+            else:
+                last = 0
+            new_id = last + 1
+            created_at = int(__import__("time").time())
+            insert_sql = f"insert into images {new_id} {save_path} {mime_type} {created_at}"
+            rc, _ = db.execute(insert_sql)
+            if rc == 0:
+                uploaded_ids.append(new_id)
+        return jsonify({"message": "Images uploaded successfully", "uploaded_ids": uploaded_ids}), 200
     except Exception as e:
-        connection.rollback()
         print(f"Error uploading images: {e}")
         return jsonify({"error": "Failed to upload images"}), 500
     finally:
-        cursor.close()
-        connection.close()
-
-    return jsonify({"message": "Images uploaded successfully", "uploaded_ids": uploaded_ids}), 200
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 @api.route('/images', methods=['GET','OPTIONS'])
@@ -88,54 +123,48 @@ def get_images():
     per_page = 10
     offset = (page - 1) * per_page
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    cursor.execute("""
-        SELECT id, created_at, file_path
-        FROM images
-        ORDER BY id DESC
-        LIMIT %s OFFSET %s
-    """, (per_page, offset))
-    records = cursor.fetchall()
-    cursor.close()
-    connection.close()
-
-    image_list = []
-    for row in records:
-        image_list.append({
-            "id": row['id'],
-            "created_at": row['created_at'],
-            # 这里依旧可以保留 "/api/image/<id>" 给前端使用
-            # 或者直接提供 row['file_path'] 让前端访问静态文件
-            "src": f"/api/image/{row['id']}"
-        })
-    
-    return jsonify({"images": image_list}), 200
+    DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "test.db"))
+    db = MyDB(DB_PATH)
+    ensure_images_table(db)
+    try:
+        sql = f"select id, created_at, file_path from images order by id desc limit {per_page} offset {offset}"
+        rc, parsed = db.execute_json(sql)
+        if rc != 0 or parsed is None:
+            return jsonify({"images": []}), 200
+        rows = parsed.get("rows", [])
+        image_list = []
+        for r in rows:
+            image_list.append({
+                "id": r.get("id"),
+                "created_at": r.get("created_at"),
+                "src": f"/api/image/{r.get('id')}"
+            })
+        return jsonify({"images": image_list}), 200
+    finally:
+        db.close()
 
 
 @api.route('/image/<int:image_id>', methods=['GET','OPTIONS'])
 def get_image(image_id):
     if request.method == 'OPTIONS':
         return '', 200
-
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    cursor.execute("""
-        SELECT file_path, mime_type
-        FROM images
-        WHERE id = %s
-    """, (image_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    connection.close()
-
-    if not row:
-        return jsonify({"error": "Image not found"}), 404
-
-    file_path = row['file_path']
-    mime_type = row['mime_type']
-    
-    print(file_path)
+    DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "test.db"))
+    db = MyDB(DB_PATH)
+    ensure_images_table(db)
+    try:
+        rc, parsed = db.execute_json(f"select file_path, mime_type from images where id = {image_id}")
+        if rc != 0 or parsed is None:
+            return jsonify({"error": "Image not found"}), 404
+        rows = parsed.get("rows", [])
+        if not rows:
+            return jsonify({"error": "Image not found"}), 404
+        file_path = rows[0].get("file_path")
+        mime_type = rows[0].get("mime_type")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
     if not os.path.exists(file_path):
         return jsonify({"error": "File not found"}), 404
@@ -171,35 +200,28 @@ def delete_image(image_id):
     if request.method == 'OPTIONS':
         return '', 200
     
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    cursor.execute("""
-        SELECT file_path
-        FROM images
-        WHERE id = %s
-    """, (image_id,))
-    row = cursor.fetchone()
-    if not row:
-        cursor.close()
-        connection.close()
-        return jsonify({"error": "Image not found"}), 404
-
-    file_path = row['file_path']
-    
-    # 删除数据库记录
-    cursor.execute("DELETE FROM images WHERE id = %s", (image_id,))
-    connection.commit()
-    cursor.close()
-    connection.close()
-
-    # 同时删除本地文件
-    if os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-        except OSError as e:
-            print(f"Error deleting file {file_path}: {e}")
-
-    return jsonify({"message": f'Image {image_id} deleted successfully'}), 200
+    DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "bin", "test.db"))
+    db = MyDB(DB_PATH)
+    ensure_images_table(db)
+    try:
+        rc, parsed = db.execute_json(f"select file_path from images where id = {image_id}")
+        if rc != 0 or parsed is None:
+            return jsonify({"error": "Image not found"}), 404
+        rows = parsed.get("rows", [])
+        if not rows:
+            return jsonify({"error": "Image not found"}), 404
+        file_path = rows[0].get("file_path")
+        # delete record
+        db.execute(f"delete from images where id = {image_id}")
+        # delete file
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError as e:
+                print(f"Error deleting file {file_path}: {e}")
+        return jsonify({"message": f'Image {image_id} deleted successfully'}), 200
+    finally:
+        db.close()
 
 
 @api.route('/images/all_ids', methods=['GET','OPTIONS'])
@@ -207,14 +229,16 @@ def get_all_image_ids():
     if request.method == 'OPTIONS':
         return '', 200
     
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    cursor.execute("SELECT id FROM images ORDER BY id DESC")
-    rows = cursor.fetchall()
-    cursor.close()
-    connection.close()
-
-    return jsonify({"images": rows}), 200
+    DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "test.db"))
+    db = MyDB(DB_PATH)
+    ensure_images_table(db)
+    try:
+        rc, parsed = db.execute_json("select id from images order by id desc")
+        if rc != 0 or parsed is None:
+            return jsonify({"images": []}), 200
+        return jsonify({"images": parsed.get("rows", [])}), 200
+    finally:
+        db.close()
 
 
 app.register_blueprint(api)
